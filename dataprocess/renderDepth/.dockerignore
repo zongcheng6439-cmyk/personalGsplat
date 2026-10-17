@@ -1,0 +1,9 @@
+**
+!Dockerfile
+!LetsGo/
+!LetsGo/submodules/
+!LetsGo/submodules/diff-gaussian-rasterization/
+!LetsGo/submodules/diff-gaussian-rasterization/**
+**/.git
+**/build
+**/__pycache__
