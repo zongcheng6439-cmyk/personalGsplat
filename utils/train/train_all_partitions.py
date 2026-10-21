@@ -3,6 +3,16 @@
 ``--method`` selects per-GS anchors, weighted voxel anchors, or voxel-plane
 anchors. All methods share the same block partition, coarse PLY, GS budget,
 texture maps, dense depth maps and GPU scheduler.
+
+Voxel-plane blocks explicitly enable PGSR normal supervision and rendered-plane
+NCC by default. Set --pgsr_sv_lambda 0 for NCC alone, or --no-pgsr_loss to disable.
+Inputs: prepared scene, partition metadata/camera lists, coarse model, anchors.
+Outputs: per-block models, logs and block_training_info.json under result_dir.
+Run from the repository root (replace example paths):
+    python utils/train/train_all_partitions.py --method voxel_plane \
+        --data_dir /path/to/scene --block_dir /path/to/partitions \
+        --coarse_dir /path/to/coarse --result_dir /path/to/results \
+        --plane_anchor_ply /path/to/plane_anchors.ply --pgsr_loss
 """
 
 import argparse
@@ -392,6 +402,13 @@ def build_command(task: BlockTask, args, result_dir: Path) -> Tuple[List[str], i
                 str(args.plane_normal_tolerance),
                 "--strategy.anchor-max-distance",
                 str(args.anchor_max_distance),
+                "--pgsr-loss" if args.pgsr_loss else "--no-pgsr-loss",
+                "--pgsr-sv-lambda", str(args.pgsr_sv_lambda),
+                "--pgsr-mv-lambda", str(args.pgsr_mv_lambda),
+                "--pgsr-start-iter", str(args.pgsr_start_iter),
+                "--pgsr-warmup-steps", str(args.pgsr_warmup_steps),
+                "--pgsr-every", str(args.pgsr_every),
+                "--pgsr-samples", str(args.pgsr_samples),
             ]
         )
     else:
@@ -435,6 +452,7 @@ def train_block(task: BlockTask, gpu_id: int, args) -> BlockResult:
         "status": status,
         "return_code": None,
         "elapsed_seconds": None,
+        "command": command,
     }
     info_file.write_text(
         json.dumps(block_info, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -563,6 +581,18 @@ def parse_args():
     parser.add_argument("--min_opacity", type=float, default=0.005)
     parser.add_argument("--texture_weight", type=float, default=2.0)
     parser.add_argument("--grad_weight", type=float, default=1.0)
+    parser.add_argument(
+        "--pgsr_loss", action=argparse.BooleanOptionalAction, default=True,
+        help="Enable PGSR geometry/NCC for voxel_plane blocks only",
+    )
+    parser.add_argument("--pgsr_sv_lambda", type=float, default=0.015,
+                        help="Single-view normal weight; 0 keeps only PGSR NCC")
+    parser.add_argument("--pgsr_mv_lambda", type=float, default=0.15,
+                        help="Rendered-plane multi-view NCC weight")
+    parser.add_argument("--pgsr_start_iter", type=int, default=5000)
+    parser.add_argument("--pgsr_warmup_steps", type=int, default=5000)
+    parser.add_argument("--pgsr_every", type=int, default=2)
+    parser.add_argument("--pgsr_samples", type=int, default=4096)
     parser.add_argument("--dry_run", action="store_true")
     args = parser.parse_args()
     args.repo_dir = repo_dir
@@ -582,6 +612,13 @@ def parse_args():
         if args.anchor_ply is None or not args.anchor_ply.is_file():
             parser.error("texture_voxel requires an existing --anchor_ply")
     if args.method == "voxel_plane":
+        if args.pgsr_loss and (
+            min(args.pgsr_sv_lambda, args.pgsr_mv_lambda) < 0
+            or args.pgsr_sv_lambda + args.pgsr_mv_lambda == 0
+            or min(args.pgsr_start_iter, args.pgsr_warmup_steps) < 0
+            or min(args.pgsr_every, args.pgsr_samples) < 1
+        ):
+            parser.error("PGSR requires nonnegative weights/start/warmup, a positive weight, and positive every/samples")
         if args.plane_anchor_ply is not None:
             args.plane_anchor_ply = args.plane_anchor_ply.expanduser()
         if args.plane_anchor_ply is None or not args.plane_anchor_ply.is_file():

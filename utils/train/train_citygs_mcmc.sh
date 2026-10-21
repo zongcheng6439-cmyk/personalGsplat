@@ -4,6 +4,13 @@ set -euo pipefail
 # Large-scene pipeline: prepare edge-filtered depth supervision and voxel-plane
 # anchors, run two coarse steps per image, then train every block with the
 # latest Voxel Plane Texture MCMC before merging the block PLYs.
+# Input: prepared scene images/COLMAP/depth and plane anchors; output: coarse,
+# per-block models/logs and merged PLY under RESULT_DIR.
+# From the repository root in the training environment:
+#   bash utils/train/train_citygs_mcmc.sh /lutu/parking01 /lutu/parking01/run_pgsr all
+# Only train existing partitions, with PGSR NCC and no single-view normal loss:
+#   PGSR_SV_LAMBDA=0 bash utils/train/train_citygs_mcmc.sh /lutu/parking01 /lutu/parking01/run_pgsr blocks
+# PGSR_LOSS=0 disables PGSR; otherwise its default settings match the dispatcher.
 
 TRAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UTIL_DIR="$(cd "$TRAIN_DIR/.." && pwd)"
@@ -131,6 +138,11 @@ if run_stage partition; then
 fi
 
 if run_stage blocks; then
+    case "${PGSR_LOSS:-1}" in
+        1) pgsr_flag=--pgsr_loss ;;
+        0) pgsr_flag=--no-pgsr_loss ;;
+        *) echo "PGSR_LOSS must be 0 or 1" >&2; exit 2 ;;
+    esac
     "$PYTHON_BIN" "$TRAIN_DIR/train_all_partitions.py" \
         --method voxel_plane \
         --data_dir "$DATA_DIR" \
@@ -154,6 +166,13 @@ if run_stage blocks; then
         --depth_refine_lambda "${DEPTH_REFINE_LAMBDA:-0.05}" \
         --texture_weight "${TEXTURE_WEIGHT:-2.0}" \
         --grad_weight "${GRAD_WEIGHT:-1.0}" \
+        "$pgsr_flag" \
+        --pgsr_sv_lambda "${PGSR_SV_LAMBDA:-0.015}" \
+        --pgsr_mv_lambda "${PGSR_MV_LAMBDA:-0.15}" \
+        --pgsr_start_iter "${PGSR_START_ITER:-5000}" \
+        --pgsr_warmup_steps "${PGSR_WARMUP_STEPS:-5000}" \
+        --pgsr_every "${PGSR_EVERY:-2}" \
+        --pgsr_samples "${PGSR_SAMPLES:-4096}" \
         --min_free_gb "${MIN_FREE_GB:-6}"
 fi
 
