@@ -1,3 +1,7 @@
+"""COLMAP dataset called by training scripts; input scene, output camera/RGB/depth tensors.
+Depth format is read from depths_render_color_edge/depth_format.json (legacy: LA).
+Example caller: examples/simple_trainer.py via Dataset and Parser.
+"""
 # SPDX-FileCopyrightText: Copyright 2023-2026 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -12,6 +16,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from datasets.depth_io import resolve_depth_source, read_training_depth
 
 import json
 import os
@@ -52,6 +58,9 @@ class Parser:
         test_every: int = 8,
         load_exposure: bool = False,
         block_cameras_json: Optional[str] = None,
+        depth_tag: str = "auto",
+        depth_dir: Optional[str] = None,
+        depth_scale: Optional[float] = None,
     ):
         self.data_dir = data_dir
         self.factor = factor
@@ -208,10 +217,11 @@ class Parser:
 
         mask_paths = [str(mask_path(mask_dir, name)) for name in image_names]
 
-        # read depth map from gs render 
-        depths_dir = os.path.join(data_dir, 'depths_render_color_edge')
-        if not os.path.isdir(depths_dir):
-            depths_dir = os.path.join(data_dir, 'depths_render_color')
+        depths_dir, self.depth_settings = resolve_depth_source(
+            data_dir, depth_dir, depth_tag, depth_scale
+        )
+        print(f"[Depth] directory={depths_dir}, tag={self.depth_settings['tag']}, "
+              f"scale={self.depth_settings['scale']}")
         depths_paths = [
             os.path.join(depths_dir, os.path.splitext(colmap_to_image[f])[0] + ".png")
             for f in image_names
@@ -477,11 +487,9 @@ class Dataset:
         mask_image = mask_image > 128
 
         if self.load_depths:
-            with Image.open(self.parser.depth_paths[index]) as depth_map:
-                resized_depth_map = PILtoTorch(depth_map.convert("LA"), (W, H))
-            depth_gs = warpped_depth_inv(resized_depth_map[0:1])[0, :, :]
-            depth_gs_mask = resized_depth_map[1].bool() & torch.isfinite(depth_gs)
-            depth_gs = torch.nan_to_num(depth_gs, nan=0.0, posinf=0.0, neginf=0.0)
+            depth_gs, depth_gs_mask = read_training_depth(
+                self.parser.depth_paths[index], self.parser.depth_settings, (W, H)
+            )
 
         camera_id = self.parser.camera_ids[index]
         K = self.parser.Ks_dict[camera_id].copy()  # undistorted K

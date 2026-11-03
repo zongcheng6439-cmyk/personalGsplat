@@ -1,4 +1,8 @@
-"""Precompute planar normals from the rendered depth maps."""
+"""Precompute planar normals from depths using the recorded depth tag and scale.
+
+From the repository root: python utils/data_process/generate_depth_normals.py --data_dir /path/to/scene --device cuda
+Input: prepared COLMAP scene and filtered depth PNGs; output: depth normals.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +21,8 @@ EXAMPLE_DIR = REPO_DIR / "examples"
 if str(EXAMPLE_DIR) not in sys.path:
     sys.path.insert(0, str(EXAMPLE_DIR))
 
-from datasets.colmap_adc import Parser, PILtoTorch, warpped_depth_inv  # noqa: E402
+from datasets.depth_io import read_training_depth
+from datasets.colmap_adc import Parser  # noqa: E402
 from utils import (  # noqa: E402
     depth_to_normal,
     load_depth_normals,
@@ -29,12 +34,9 @@ def load_depth(parser: Parser, index: int):
     """Load depth exactly as the training dataset does."""
     with Image.open(parser.image_paths[index]) as image:
         width, height = image.size
-    with Image.open(parser.depth_paths[index]) as image:
-        encoded = PILtoTorch(image.convert("LA"), (width, height))
-
-    depth = warpped_depth_inv(encoded[0])
-    valid = encoded[1].bool() & torch.isfinite(depth)
-    depth = torch.nan_to_num(depth)
+    depth, valid = read_training_depth(
+        parser.depth_paths[index], parser.depth_settings, (width, height)
+    )
     camera_id = parser.camera_ids[index]
     K = torch.from_numpy(parser.Ks_dict[camera_id].copy()).float()
     if len(parser.params_dict[camera_id]) > 0:

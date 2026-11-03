@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Generate valid-pixel masks by masking YOLO person bounding boxes."""
+"""Generate valid-pixel masks from images using YOLO person bounding boxes.
+
+From the repository root (/Users/zongcheng/code/3dgs/personalGsplat):
+    python utils/data_process/remove_person_v1.py --project_dir /path/to/scene --device cuda:0
+Replace /path/to/scene with a directory containing images/.
+Outputs: masks/ with original relative names; optional previews in bound/.
+Also called by utils/data_process/prepare_citygs_data.py.
+"""
 
 import argparse
 from pathlib import Path
@@ -18,8 +25,9 @@ def optimize_mask(mask):
     return np.where(np.asarray(people) > 127, 0, 255).astype(np.uint8)
 
 
-def save_result(result, image_root, mask_root, bbox_root):
-    source = Path(result.path)
+def save_result(result, source, image_root, mask_root, bbox_root):
+    """Called by main with the original input path, not a YOLO-generated name."""
+    source = Path(source)
     relative = source.relative_to(image_root)
     image = result.orig_img
     height, width = image.shape[:2]
@@ -107,8 +115,13 @@ def main():
             stream=True,
             verbose=False,
         )
-        for result in results:
-            save_result(result, image_root, mask_root, bbox_root)
+        # List inputs produce results in input order; some Ultralytics versions
+        # replace their paths with image0.jpg, image1.jpg, etc.
+        results = list(results)
+        if len(results) != len(batch):
+            raise RuntimeError(f"Expected {len(batch)} results, got {len(results)}")
+        for source, result in zip(batch, results):
+            save_result(result, source, image_root, mask_root, bbox_root)
             progress.update()
     progress.close()
     print(f"Images: {len(images)}, generated: {len(pending)}, masks: {mask_root}")

@@ -10,6 +10,7 @@ set -euo pipefail
 #   bash utils/train/train_citygs_mcmc.sh /lutu/parking01 /lutu/parking01/run_pgsr all
 # Only train existing partitions, with PGSR NCC and no single-view normal loss:
 #   PGSR_SV_LAMBDA=0 bash utils/train/train_citygs_mcmc.sh /lutu/parking01 /lutu/parking01/run_pgsr blocks
+# Depth input: DEPTH_TAG=uint16 DEPTH_SCALE=1000 RAW_DEPTH_DIR=depth for ScanNet++.
 # PGSR_LOSS=0 disables PGSR; otherwise its default settings match the dispatcher.
 
 TRAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,6 +62,8 @@ if run_stage prepare; then
         --target-gs "$TARGET_GS"
         --voxel-size "${ANCHOR_VOXEL_SIZE:-0.1}"
         --depth-dir "${RAW_DEPTH_DIR:-depths_render_color}"
+        --depth-tag "${DEPTH_TAG:-la}"
+        --depth-scale "${DEPTH_SCALE:-1000}"
         --depth-edge-abs-threshold "${DEPTH_EDGE_ABS_THRESHOLD:-0.2}"
         --depth-edge-relative-threshold "${DEPTH_EDGE_RELATIVE_THRESHOLD:-0.02}"
         --depth-edge-dilation-kernel "${DEPTH_EDGE_DILATION_KERNEL:-7}"

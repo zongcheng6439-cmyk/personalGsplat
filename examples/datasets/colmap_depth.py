@@ -1,3 +1,7 @@
+"""COLMAP dataset called by training scripts; input scene, output camera/RGB/depth tensors.
+Depth format is read from depths_render_color_edge/depth_format.json (legacy: LA).
+Example caller: examples/simple_trainer.py via Dataset and Parser.
+"""
 # SPDX-FileCopyrightText: Copyright 2023-2026 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -12,6 +16,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from datasets.depth_io import depth_settings, read_training_depth
 
 import json
 import os
@@ -193,6 +199,7 @@ class Parser:
         depths_dir = os.path.join(data_dir, 'depths_render_color_edge')
         if not os.path.isdir(depths_dir):
             depths_dir = os.path.join(data_dir, 'depths_render_color')
+        self.depth_settings = depth_settings(depths_dir)
         depths_paths = [
             os.path.join(depths_dir, Path(colmap_to_image[f]).stem + ".png")
             for f in image_names
@@ -447,15 +454,9 @@ class Dataset:
         mask_image = mask_image > 128
 
         if self.load_depths:
-            depth_map = Image.open(self.parser.depth_paths[index])
-            resized_depth_map = PILtoTorch(depth_map.convert("LA"), (W, H))
-            depth_gs = warpped_depth_inv(resized_depth_map[0:1])[0, :, :]
-            has_inf = torch.isinf(depth_gs)
-            has_nan = torch.isnan(depth_gs)
-            invalid_depth = has_inf | has_nan  
-            # print(invalid_depth.sum())
-            depth_gs_mask = resized_depth_map[1:2][0, :, :].bool() & (~invalid_depth)
-            depth_gs = torch.nan_to_num(depth_gs, nan=0.0, posinf=0.0, neginf=0.0)
+            depth_gs, depth_gs_mask = read_training_depth(
+                self.parser.depth_paths[index], self.parser.depth_settings, (W, H)
+            )
 
         camera_id = self.parser.camera_ids[index]
         K = self.parser.Ks_dict[camera_id].copy()  # undistorted K

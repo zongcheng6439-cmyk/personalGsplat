@@ -1,0 +1,4 @@
+# Dependencies for tsdf_fusion.py (RGB-D input -> colored PLY).
+# From the repository root: python -m pip install -r dataprocess/pointprocess/requirements-tsdf.txt
+open3d==0.19.0
+numpy>=1.26,<3

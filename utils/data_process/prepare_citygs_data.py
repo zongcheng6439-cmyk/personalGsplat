@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Prepare masks, depths, weight maps and anchors for the training pipeline."""
+"""Prepare masks, filtered depths, weights and optional anchors from a scene.
+
+From the repository root:
+python utils/data_process/prepare_citygs_data.py --data-dir /path/to/scene --depth-dir depth --depth-tag uint16 --depth-scale 1000
+Input: images/, sparse/, depth PNGs. Output: masks/, depths_render_color_edge/,
+weight_map/ and optional anchor PLYs. Replace /path/to/scene with the actual path.
+"""
 
 from __future__ import annotations
 
@@ -46,8 +52,11 @@ def main() -> None:
     parser.add_argument(
         "--depth-dir",
         default="depths_render_color",
-        help="raw LA depth PNG directory relative to data-dir",
+        help="raw depth PNG directory relative to data-dir",
     )
+    parser.add_argument("--depth-tag", choices=("la", "uint16"), default="la")
+    parser.add_argument("--depth-scale", type=float, default=1000.0)
+    parser.add_argument("--point-ply", type=Path, help="Initialization PLY for plane anchors; default sparse/0/extracted.ply")
     parser.add_argument("--depth-edge-abs-threshold", type=float, default=0.2)
     parser.add_argument("--depth-edge-relative-threshold", type=float, default=0.02)
     parser.add_argument("--depth-edge-dilation-kernel", type=int, default=7)
@@ -112,34 +121,38 @@ def main() -> None:
     missing_filtered_depths = missing_inputs(
         images, image_root, filtered_depth_root
     )
-    if missing_filtered_depths or args.overwrite_derived:
-        command = [
-            sys.executable,
-            str(
-                Path(__file__).parent
-                / "depth_process"
-                / "generate_depth_edge_masks.py"
-            ),
-            "--data-dir",
-            str(data_dir),
-            "--input-dir",
-            args.depth_dir,
-            "--abs-threshold",
-            str(args.depth_edge_abs_threshold),
-            "--relative-threshold",
-            str(args.depth_edge_relative_threshold),
-            "--dilation-kernel",
-            str(args.depth_edge_dilation_kernel),
-            "--workers",
-            str(args.workers),
-        ]
-        if args.overwrite_derived:
-            command.append("--overwrite")
-        print("+", " ".join(command), flush=True)
-        subprocess.run(command, check=True)
-        missing_filtered_depths = missing_inputs(
-            images, image_root, filtered_depth_root
-        )
+    # Always validate the recorded format; the child skips compatible existing files.
+    command = [
+        sys.executable,
+        str(
+            Path(__file__).parent
+            / "depth_process"
+            / "generate_depth_edge_masks.py"
+        ),
+        "--data-dir",
+        str(data_dir),
+        "--input-dir",
+        args.depth_dir,
+        "--depth-tag",
+        args.depth_tag,
+        "--depth-scale",
+        str(args.depth_scale),
+        "--abs-threshold",
+        str(args.depth_edge_abs_threshold),
+        "--relative-threshold",
+        str(args.depth_edge_relative_threshold),
+        "--dilation-kernel",
+        str(args.depth_edge_dilation_kernel),
+        "--workers",
+        str(args.workers),
+    ]
+    if args.overwrite_derived:
+        command.append("--overwrite")
+    print("+", " ".join(command), flush=True)
+    subprocess.run(command, check=True)
+    missing_filtered_depths = missing_inputs(
+        images, image_root, filtered_depth_root
+    )
     if missing_filtered_depths:
         raise SystemExit(
             f"Missing {len(missing_filtered_depths)} filtered depth maps"
@@ -192,7 +205,7 @@ def main() -> None:
     if plane_anchor_ply is not None and (
         not plane_anchor_ply.is_file() or args.overwrite_derived
     ):
-        point_ply = data_dir / "sparse" / "0" / "extracted.ply"
+        point_ply = args.point_ply.resolve() if args.point_ply else data_dir / "sparse" / "0" / "extracted.ply"
         if not point_ply.is_file():
             raise FileNotFoundError(
                 f"voxel-plane anchors require initialization PLY: {point_ply}"

@@ -1,14 +1,25 @@
-"""Remove depth discontinuities from the alpha mask of LA depth PNGs."""
+"""Filter depth edges in LA or uint16 PNGs; preserve encoding and record format.
+
+From the repository root:
+python utils/data_process/depth_process/generate_depth_edge_masks.py --data-dir /path/to/scene --input-dir depth --depth-tag uint16 --depth-scale 1000
+Input: PNG depth directory. Output: depths_render_color_edge/ and depth_format.json.
+Replace /path/to/scene with the actual scene directory.
+"""
 
 from __future__ import annotations
 
 import argparse
+import json
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "examples"))
+from datasets.depth_io import read_depth
 
 
 def resolve_dir(data_dir: Path, path: Path | None, default: str) -> Path:
@@ -17,18 +28,12 @@ def resolve_dir(data_dir: Path, path: Path | None, default: str) -> Path:
 
 
 def depth_edges(
-    encoded: np.ndarray,
+    depth: np.ndarray,
     valid: np.ndarray,
     abs_threshold: float,
     relative_threshold: float,
 ) -> np.ndarray:
     """Mark both pixels of horizontal/vertical depth discontinuities."""
-    value = encoded.astype(np.float32) / 255.0
-    depth = np.where(
-        value < 0.5,
-        value * 20.0,
-        5.0 / np.maximum(1.0 - value, 1e-6),
-    )
     edge = np.zeros(valid.shape, dtype=bool)
 
     def mark(a, b, valid_pair, edge_a, edge_b):
@@ -62,23 +67,26 @@ def process_depth_map(
     relative_threshold: float,
     kernel: np.ndarray,
     overwrite: bool,
+    depth_tag: str = "la",
+    depth_scale: float = 1000.0,
 ) -> tuple[bool, int, int]:
     """Process one depth map and return written, removed, valid counts."""
     target = output_dir / source.relative_to(input_dir)
     if target.is_file() and not overwrite:
         return False, 0, 0
 
-    with Image.open(source) as image:
-        depth_la = np.asarray(image.convert("LA"), dtype=np.uint8)
-    encoded, alpha = depth_la[..., 0], depth_la[..., 1]
-    valid = (alpha > 127) & (encoded > 0) & (encoded < 255)
-    edge = depth_edges(encoded, valid, abs_threshold, relative_threshold)
+    depth, valid = read_depth(source, depth_tag, depth_scale)
+    edge = depth_edges(depth, valid, abs_threshold, relative_threshold)
     edge = cv2.dilate(edge.astype(np.uint8), kernel).astype(bool)
     filtered = valid & ~edge
-
-    result = np.stack((encoded, filtered.astype(np.uint8) * 255), axis=-1)
+    with Image.open(source) as image:
+        raw = np.array(image)
+    if depth_tag == "la":
+        raw[..., 1] = filtered.astype(np.uint8) * 255
+    else:
+        raw = np.where(filtered, raw, 0).astype(np.uint16)
     target.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(result, mode="LA").save(target)
+    Image.fromarray(raw).save(target)
     valid_count = int(valid.sum())
     return True, valid_count - int(filtered.sum()), valid_count
 
@@ -88,6 +96,8 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, default='/media/zc/SSD/ar/ABXBJQ_BJ/B3/section_0907/')
     parser.add_argument("--input-dir", type=Path)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--depth-tag", choices=("la", "uint16"), default="la")
+    parser.add_argument("--depth-scale", type=float, default=1000.0)
     parser.add_argument("--abs-threshold", type=float, default=0.2)
     parser.add_argument("--relative-threshold", type=float, default=0.02)
     parser.add_argument("--dilation-kernel", type=int, default=7)
@@ -113,6 +123,22 @@ def main() -> None:
     if not paths:
         raise FileNotFoundError(f"no PNG depth maps found in {input_dir}")
 
+    # Never reuse outputs made with a different encoding, unit, or filter.
+    metadata = dict(tag=args.depth_tag, scale=args.depth_scale,
+                    source=str(input_dir.resolve()), abs_threshold=args.abs_threshold,
+                    relative_threshold=args.relative_threshold, dilation_kernel=args.dilation_kernel)
+    config_path = output_dir / "depth_format.json"
+    if not np.isfinite(args.depth_scale) or args.depth_scale <= 0:
+        parser.error("depth-scale must be finite and positive")
+    if config_path.exists():
+        if json.loads(config_path.read_text()) != metadata and not args.overwrite:
+            parser.error("Depth settings changed; use --overwrite to regenerate filtered depths")
+    elif output_dir.exists() and any(output_dir.rglob("*.png")) and not args.overwrite:
+        parser.error("Existing depths have no format metadata; use --overwrite to regenerate")
+    # Validate the format before submitting work or replacing the metadata.
+    read_depth(paths[0], args.depth_tag, args.depth_scale)
+    if config_path.exists():
+        config_path.unlink()
     kernel = np.ones((args.dilation_kernel, args.dilation_kernel), np.uint8)
     written = skipped = removed = valid_total = 0
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
@@ -126,6 +152,8 @@ def main() -> None:
                 args.relative_threshold,
                 kernel,
                 args.overwrite,
+                args.depth_tag,
+                args.depth_scale,
             )
             for source in paths
         ]
@@ -145,6 +173,7 @@ def main() -> None:
                     flush=True,
                 )
 
+    config_path.write_text(json.dumps(metadata, indent=2) + "\n")
     ratio = removed / max(valid_total, 1)
     print(
         f"Saved to {output_dir}: written={written}, skipped={skipped}, "

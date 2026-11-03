@@ -16,6 +16,29 @@ ownership. Both subcommands expose the same trainer and geometry-loss options.
     python examples/train_voxel_plane_mcmc.py original --help
     python examples/train_voxel_plane_mcmc.py dynamic --help
 
+ScanNet++ 068ba2946c depth supervision (both original and dynamic):
+
+    python examples/train_voxel_plane_mcmc.py original \
+        --data-dir /media/zc/SSD/GS/scannetTpp/068ba2946c \
+        --result-dir results/068ba2946c_voxel_plane \
+        --strategy.plane-anchor-ply /media/zc/SSD/GS/scannetTpp/068ba2946c/cgal_voxel_plane_anchors.ply \
+        --strategy.anchor-voxel-size 0.05 \
+        --depth-loss --depth-tag uint16 --depth-dir depth --depth-scale 1000
+
+Depth arguments are inherited from simple_trainer_texture.Config and passed
+through its Runner to colmap_adc.Parser. uint16 uses millimeter camera-z PNGs
+(zero invalid); auto reads prepared format metadata; la uses legacy encoding.
+For filtered uint16 PNGs use --depth-dir depths_render_color_edge instead.
+The anchor voxel size must match the value used to generate the anchors.
+The depth tag does not enable supervision: also pass --depth-loss.
+
+Optional opacity binarization (Bernoulli entropy on visible Gaussian logits):
+append --opacity-entropy-lambda 0.01 --opacity-entropy-start-iter 7000
+--opacity-entropy-warmup-steps 1000 to either training command. Weight defaults
+to 0 (disabled); --opacity-entropy-stop-iter -1 keeps it on after warmup.
+This is independent of --opacity-reg, which penalizes mean opacity towards 0.
+Logs at --tb-every include raw/weighted entropy and visible opacity fractions.
+
 Enable the isolated PGSR geometry losses with ``--pgsr-loss``. Plane normals
 and camera-to-plane distances are rendered per pixel through gsplat
 ``extra_signals`` (one additional rasterization on PGSR steps), divided into
@@ -46,6 +69,7 @@ import tyro
 from nerfview import apply_float_colormap
 
 from gsplat.distributed import cli
+from opacity_regularization import opacity_entropy_loss
 from gsplat.strategy.plane_mcmc import PlaneMCMCStrategy
 from gsplat.strategy.voxel_plane_mcmc import VoxelPlaneMCMCStrategy
 from gsplat.utils import normalized_quat_to_rotmat
@@ -100,6 +124,12 @@ class Config(base.Config):
     init_opa: float = 0.5
     init_scale: float = 0.1
     opacity_reg: float = 0.01
+    # Bernoulli entropy on currently visible Gaussian opacities; 0 disables it.
+    opacity_entropy_lambda: float = 0.0
+    opacity_entropy_start_iter: int = 7_000
+    opacity_entropy_warmup_steps: int = 1_000
+    # Exclusive stop iteration; -1 means no scheduled stop.
+    opacity_entropy_stop_iter: int = -1
     scale_reg: float = 0.01
     anchor_normal_lambda: float = 0.1
     knn_plane_lambda: float = 0.5
@@ -135,6 +165,10 @@ class Config(base.Config):
 
     def adjust_steps(self, factor: float):
         super().adjust_steps(factor)
+        self.opacity_entropy_start_iter = int(self.opacity_entropy_start_iter * factor)
+        self.opacity_entropy_warmup_steps = int(self.opacity_entropy_warmup_steps * factor)
+        if self.opacity_entropy_stop_iter >= 0:
+            self.opacity_entropy_stop_iter = int(self.opacity_entropy_stop_iter * factor)
         self.pgsr_start_iter = int(self.pgsr_start_iter * factor)
         self.pgsr_warmup_steps = int(self.pgsr_warmup_steps * factor)
 
@@ -152,6 +186,16 @@ CONFIGS = {
 
 class Runner(base.Runner):
     def __init__(self, local_rank, world_rank, world_size, cfg):
+        if (
+            not math.isfinite(cfg.opacity_entropy_lambda)
+            or cfg.opacity_entropy_lambda < 0
+            or cfg.opacity_entropy_start_iter < 0
+            or cfg.opacity_entropy_warmup_steps < 0
+            or cfg.opacity_entropy_stop_iter < -1
+            or (cfg.opacity_entropy_stop_iter >= 0
+                and cfg.opacity_entropy_stop_iter <= cfg.opacity_entropy_start_iter)
+        ):
+            raise ValueError("Opacity entropy requires non-negative weight/start/warmup and stop=-1 or stop>start")
         if world_size != 1:
             raise ValueError("voxel-plane MCMC currently supports one GPU")
         if cfg.normalize_world_space:
@@ -232,8 +276,48 @@ class Runner(base.Runner):
             self._pgsr = pgsr_geom
 
     def extra_training_loss(self, info, **context):
-        del info
-        return self._pgsr_extra_loss(**context)
+        pgsr_loss = self._pgsr_extra_loss(**context)
+        entropy_loss = self._opacity_entropy_loss(info, context["step"])
+        if entropy_loss is None:
+            return pgsr_loss
+        return entropy_loss if pgsr_loss is None else pgsr_loss + entropy_loss
+
+    def _opacity_entropy_loss(self, info, step):
+        cfg = self.cfg
+        if (
+            cfg.opacity_entropy_lambda == 0
+            or step < cfg.opacity_entropy_start_iter
+            or (cfg.opacity_entropy_stop_iter >= 0 and step >= cfg.opacity_entropy_stop_iter)
+        ):
+            return None
+        progress = (min(1.0, (step - cfg.opacity_entropy_start_iter) / cfg.opacity_entropy_warmup_steps)
+                    if cfg.opacity_entropy_warmup_steps else 1.0)
+        weight = cfg.opacity_entropy_lambda * progress
+        radii = info["radii"]
+        # Same unpacked visibility rule as VoxelPlaneMCMCStrategy; combine views.
+        visible = (radii > 0).all(-1).any(0) if radii.ndim == 3 else (radii > 0).any(0)
+        logits = self.splats["opacities"][visible]
+        raw_loss = opacity_entropy_loss(logits)
+        weighted_loss = weight * raw_loss
+        if self.world_rank == 0 and cfg.tb_every > 0 and step % cfg.tb_every == 0:
+            with torch.no_grad():
+                alpha = logits.sigmoid()
+                low = (alpha < 0.01).float().mean().item() if alpha.numel() else 0.0
+                high = (alpha > 0.99).float().mean().item() if alpha.numel() else 0.0
+            values = {
+                "opacity_entropy": raw_loss.item(),
+                "opacity_entropy_weighted": weighted_loss.item(),
+                "opacity_entropy_weight": weight,
+                "opacity_entropy_visible_count": logits.numel(),
+                "opacity_visible_below_001": low,
+                "opacity_visible_above_099": high,
+            }
+            for name, value in values.items():
+                self.writer.add_scalar(f"train/{name}", value, step)
+            print(f"Opacity step={step} | entropy={values['opacity_entropy']:.6f} | "
+                  f"weighted={values['opacity_entropy_weighted']:.6f} | weight={weight:.5f} | "
+                  f"visible={logits.numel()} | alpha<0.01={low:.1%} | alpha>0.99={high:.1%}")
+        return weighted_loss
 
     # PGSR block: renders the
     # per-pixel plane parameters itself, so it does not need the main pass's

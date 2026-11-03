@@ -1,13 +1,23 @@
 
 cd /home/zc/code/aibee/gsplat
 
+cd /home/zc/code/gsplat-self/personalGsplat
+
+python utils/data_process/remove_person_v1.py \
+  --project_dir /media/zc/SSD/GS/scannetTpp/068ba2946c \
+  --device cuda:0 \
+  --batch_size 4
+
 python utils/data_process/prepare_citygs_data.py \
-  --data-dir /media/zc/SSD/ar/ABXBJQ_BJ/B3/B3_Full/section0907_perspective_2048 \
-  --depth-dir depths_render_color \
+  --data-dir /media/zc/SSD/GS/scannetTpp/068ba2946c \
+  --depth-dir depth \
+  --depth-tag uint16 \
+  --depth-scale 1000 \
   --device cuda:0 \
   --workers 8 \
-  --voxel-size 0.1 \
-  --plane-anchor-ply /media/zc/SSD/ar/ABXBJQ_BJ/B3/B3_Full/section0907_perspective_2048/cgal_voxel_plane_anchors.ply
+  --voxel-size 0.05 \
+  --point-ply /media/zc/SSD/GS/scannetTpp/068ba2946c/sparse/0/init.ply \
+  --plane-anchor-ply /media/zc/SSD/GS/scannetTpp/068ba2946c/cgal_voxel_plane_anchors.ply
 
 这会依次生成：
 1. 人物 mask：masks/

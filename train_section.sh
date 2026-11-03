@@ -61,22 +61,6 @@ sudo docker run -it --rm --shm-size 8G  --gpus all \
     --strategy.surface_anchor_max_distance 0.3  
 
 
-  python simple_trainer_texture.py texture_mcmc \
-    --data_dir /showroom/ \
-    --result_dir /showroom/gsplat_latest_texture_mcmc_constraint/ \
-    --data_factor 2 --sh_degree 0 --save_ply --max_steps 30000 --port 8080 \
-    --depth_loss --depth_refine_lambda 0.01 --depth_lambda 0.05 \
-    --strategy.cap_max 500000 \
-    --strategy.noise_injection_stop_iter -1 \
-    --strategy.active_noise_steps 100 \
-    --strategy.refine_every 300 \
-    --strategy.refine_start_iter 1000 \
-    --strategy.refine_stop_iter 25000 \
-    --strategy.texture_weight 2 \
-    --strategy.grad_weight 1 \
-    --strategy.surface_anchor_constraint \
-    --strategy.surface_anchor_max_distance 0.3 
-
 
 
 
@@ -149,22 +133,28 @@ python train_voxel_plane_mcmc.py original\
    
 
 python train_voxel_plane_mcmc.py original\
-   --data-dir /L16/showroom/ \
-   --result-dir /L16/showroom/gsplat_voxel_plane_mcmc \
-   --data-factor 2  \
+   --data-dir /data/ \
+   --result-dir /data/gsplat_voxel_plane_mcmc \
+   --data-factor 1  \
    --sh-degree 0 \
    --max-steps 30000 \
    --save-ply \
    --depth-loss \
-   --depth-refine-lambda 0.01 \
-   --depth-lambda 0.05 \
+   --depth-tag uint16 \
+   --depth-dir depth \
+   --depth-scale 1000  \
+   --depth-refine-lambda 0.05 \
+   --depth-lambda 0.03 \
+   --opacity-entropy-lambda 0.01 \
+   --opacity-entropy-start-iter 7000 \
+   --opacity-entropy-warmup-steps 1000 \
    --strategy.cap-max 1500000 \
    --strategy.refine-start-iter 1500 \
-   --strategy.refine-every 500 \
+   --strategy.refine-every 300 \
    --strategy.refine-stop-iter 27000 \
    --strategy.anchor_max_distance 0.4 \
    --strategy.plane-normal-tolerance 0.03 \
-   --strategy.plane-anchor-ply /L16/showroom/cgal_voxel_plane_anchors.ply 
+   --strategy.plane-anchor-ply /data/cgal_voxel_plane_anchors.ply 
    
    
 

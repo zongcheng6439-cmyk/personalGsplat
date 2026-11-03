@@ -1,3 +1,9 @@
+"""Train textured Gaussians from a COLMAP scene; writes models and diagnostics.
+
+From repository root: python examples/simple_trainer_texture.py --help
+Also used by train_weighted_anchor_mcmc.py. Depth inputs are selected using
+--depth-tag auto|la|uint16, --depth-dir and optional --depth-scale.
+"""
 # SPDX-FileCopyrightText: Copyright 2023-2026 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
@@ -298,6 +304,12 @@ class Config:
 
     # Enable depth loss. (experimental)
     depth_loss: bool = False
+    # auto: directory metadata/legacy LA; uint16: ScanNet++ depth/ in millimeters.
+    depth_tag: Literal["auto", "la", "uint16"] = "auto"
+    # Relative to data_dir, or absolute; defaults depend on depth_tag.
+    depth_dir: Optional[str] = None
+    # Raw units per meter for uint16; defaults to metadata or 1000.
+    depth_scale: Optional[float] = None
     # Final depth weight after densification has stopped.
     depth_lambda: float = 5e-2
     # Weak depth weight while add/relocate is active.
@@ -580,6 +592,9 @@ class Runner:
                 normalize=cfg.normalize_world_space,
                 test_every=cfg.test_every,
                 load_exposure=cfg.load_exposure,
+                depth_tag=cfg.depth_tag,
+                depth_dir=cfg.depth_dir,
+                depth_scale=cfg.depth_scale,
             )
             self.parser = Parser(**parser_kwargs)
             dataset_kwargs = dict(

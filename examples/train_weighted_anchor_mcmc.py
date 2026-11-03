@@ -1,3 +1,11 @@
+"""Weighted-anchor MCMC training; input COLMAP/RGB/depth/anchors, output models.
+
+From /Users/zongcheng/code/3dgs/personalGsplat (replace example data paths):
+CUDA_VISIBLE_DEVICES=0 python examples/train_weighted_anchor_mcmc.py --data-dir /path/to/068ba2946c --strategy.anchor-ply /path/to/anchors.ply --depth-loss --depth-tag uint16 --result-dir results/068ba2946c
+uint16 selects scene/depth/ and converts millimeters to meters (zero invalid).
+Use --depth-dir depths_render_color_edge for prefiltered depth PNGs.
+auto (default) reads the prepared directory metadata; la selects legacy encoding.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
